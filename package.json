@@ -4,7 +4,9 @@
   "description": "Esta es un Ejecicio de postulación para el puesto de Desarrollador web junior para la empresa NSALE",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "repository": {
     "type": "git",
@@ -24,5 +26,5 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.10"
-  }
+  } 
 }
