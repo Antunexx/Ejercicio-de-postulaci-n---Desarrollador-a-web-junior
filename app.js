@@ -1,34 +1,80 @@
 const express = require('express');
 const connectDB = require('./db');
-const camelcaseKeys = require('camelcase-keys'); // npm install camelcase-keys
+const camelcaseKeys = require('camelcase-keys');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Función de asignación de asientos (básica por ahora)
 function assignSeats(passengers, seats) {
+  // En esta constante agrupamos los pasajeros por purchaseId
+  // Esto es para que los pasajeros del mismo grupo se asignen asientos juntos
   const groupedByPurchase = {};
-
   passengers.forEach(p => {
     if (!groupedByPurchase[p.purchaseId]) groupedByPurchase[p.purchaseId] = [];
     groupedByPurchase[p.purchaseId].push(p);
   });
 
-  // Recorrer grupos y asignar
   for (const purchaseId in groupedByPurchase) {
     const group = groupedByPurchase[purchaseId];
 
-    // ordenar por edad (para intentar ubicar menores primero con adultos)
-    group.sort((a, b) => a.age - b.age);
+    // la constante adults y minors agrupa a los mayores y menores de edad
+    const adults = group.filter(p => p.age >= 18);
+    const minors = group.filter(p => p.age < 18);
 
-    group.forEach(passenger => {
-      // Buscar primer asiento libre del tipo correcto
-      const seat = seats.find(s => !s.occupied && s.seatTypeId === passenger.seatTypeId);
+    // Se asignan a los adultos primero
+    // y luego a los menores cerca de un adulto de su grupo
+    adults.forEach(adult => {
+      const seat = seats.find(s => !s.occupied && s.seatTypeId === adult.seatTypeId);
       if (seat) {
-        passenger.seatId = seat.seatId;
+        adult.seatId = seat.seatId;
         seat.occupied = true;
+        adult.assignedSeat = seat;
+      }
+    });
+    minors.forEach(minor => {
+      let seatAssigned = null;
+
+      for (const adult of adults) {
+        if (!adult.assignedSeat) continue;
+
+        // Se busca un asiento libre cerca del adulto asignado
+        seatAssigned = seats.find(s =>
+          !s.occupied &&
+          s.seatTypeId === minor.seatTypeId &&
+          (s.seatRow === adult.assignedSeat.seatRow ||
+           s.seatColumn === adult.assignedSeat.seatColumn)
+        );
+
+        if (seatAssigned) {
+          break;
+        }
+      }
+
+      // En caso de que no se haya encontrado un asiento cerca del adulto,
+      // se busca cualquier asiento libre del tipo correspondiente
+      if (!seatAssigned) {
+        seatAssigned = seats.find(s => !s.occupied && s.seatTypeId === minor.seatTypeId);
+      }
+
+      if (seatAssigned) {
+        minor.seatId = seatAssigned.seatId;
+        seatAssigned.occupied = true;
+        minor.assignedSeat = seatAssigned;
+      }
+    });
+
+    // Cuando hay adultos sin asiento asignado,
+    // se asignan los asientos restantes de su tipo
+    adults.forEach(adult => {
+      if (!adult.seatId) {
+        const seat = seats.find(s => !s.occupied && s.seatTypeId === adult.seatTypeId);
+        if (seat) {
+          adult.seatId = seat.seatId;
+          seat.occupied = true;
+          adult.assignedSeat = seat;
+        }
       }
     });
   }
@@ -36,14 +82,14 @@ function assignSeats(passengers, seats) {
   return passengers;
 }
 
+
 // Endpoint principal
 app.get('/flights/:id/passengers', async (req, res) => {
   const flightId = req.params.id;
 
+  // Unificamos toda la query
   try {
     const db = await connectDB();
-
-    // 1️⃣ Query unificada: vuelo + boarding_pass + passenger + seat_type
     const [rows] = await db.query(
       `SELECT 
         f.flight_id, f.takeoff_date_time, f.takeoff_airport,
@@ -64,7 +110,7 @@ app.get('/flights/:id/passengers', async (req, res) => {
       return res.status(404).json({ code: 404, data: {} });
     }
 
-    // 2️⃣ Armar objeto "vuelo"
+    // Armamos primero el objeto vuelo 
     const flight = {
       flightId: rows[0].flight_id,
       takeoffDateTime: rows[0].takeoff_date_time,
@@ -74,7 +120,9 @@ app.get('/flights/:id/passengers', async (req, res) => {
       airplaneId: rows[0].airplane_id
     };
 
-    // 3️⃣ Pasajeros con boarding_pass
+    // Aca estan los pasajeros con unboarding pass
+    // y sus datos asociados
+    //seatId puede ser null si no tienen asiento asignado
     const passengers = rows.map(r => ({
       passengerId: r.passenger_id,
       dni: r.dni,
@@ -85,10 +133,11 @@ app.get('/flights/:id/passengers', async (req, res) => {
       purchaseId: r.purchase_id,
       seatTypeId: r.seat_type_id,
       seatTypeName: r.seat_type_name,
-      seatId: r.seat_id // puede ser null → se asigna después
+      seatId: r.seat_id 
     }));
 
-    // 4️⃣ Traer asientos del avión
+    // Trae los asientos del avion
+    // y los ordena por fila y columna
     const [seats] = await db.query(
       `SELECT seat_id, seat_row, seat_column, seat_type_id
        FROM seat
@@ -97,7 +146,7 @@ app.get('/flights/:id/passengers', async (req, res) => {
       [flight.airplaneId]
     );
 
-    // Preparar lista de asientos disponibles
+    // Asientos disponibles
     const seatList = seats.map(s => ({
       seatId: s.seat_id,
       seatRow: s.seat_row,
@@ -106,13 +155,14 @@ app.get('/flights/:id/passengers', async (req, res) => {
       occupied: false
     }));
 
-    // 5️⃣ Asignar asientos
+    // Se asignan los asientos a los pasajeros
+    // teniendo en cuenta las reglas de asignación
     const passengersWithSeats = assignSeats(passengers, seatList);
 
-    // 6️⃣ Transformar a camelCase
+    // CamelCase
     const passengersCamel = passengersWithSeats.map(p => camelcaseKeys(p));
 
-    // 7️⃣ Respuesta final
+    // Salida final
     res.json({
       code: 200,
       data: {
