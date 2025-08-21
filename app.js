@@ -7,49 +7,28 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Función para crear grilla de asientos del avión
-function createSeatGrid(rows, cols, seats) {
-  let grid = [];
-  let k = 0;
-  for (let i = 0; i < rows; i++) {
-    let row = [];
-    for (let j = 0; j < cols; j++) {
-      if (k < seats.length) {
-        row.push({ ...seats[k], occupied: false });
-      } else {
-        row.push(null);
-      }
-      k++;
-    }
-    grid.push(row);
-  }
-  return grid;
-}
-
-// Función de asignación de asientos
-function assignSeats(passengers, seatGrid) {
+// Función de asignación de asientos (básica por ahora)
+function assignSeats(passengers, seats) {
   const groupedByPurchase = {};
+
   passengers.forEach(p => {
-    if (!groupedByPurchase[p.purchase_id]) groupedByPurchase[p.purchase_id] = [];
-    groupedByPurchase[p.purchase_id].push(p);
+    if (!groupedByPurchase[p.purchaseId]) groupedByPurchase[p.purchaseId] = [];
+    groupedByPurchase[p.purchaseId].push(p);
   });
 
+  // Recorrer grupos y asignar
   for (const purchaseId in groupedByPurchase) {
     const group = groupedByPurchase[purchaseId];
-    // ordenar por edad: menores primero
+
+    // ordenar por edad (para intentar ubicar menores primero con adultos)
     group.sort((a, b) => a.age - b.age);
 
     group.forEach(passenger => {
-      for (let i = 0; i < seatGrid.length; i++) {
-        for (let j = 0; j < seatGrid[i].length; j++) {
-          const seat = seatGrid[i][j];
-          if (seat && !seat.occupied && seat.seat_type_id === passenger.seat_type_id) {
-            passenger.seat_id = seat.id;
-            seat.occupied = true;
-            break;
-          }
-        }
-        if (passenger.seat_id) break;
+      // Buscar primer asiento libre del tipo correcto
+      const seat = seats.find(s => !s.occupied && s.seatTypeId === passenger.seatTypeId);
+      if (seat) {
+        passenger.seatId = seat.seatId;
+        seat.occupied = true;
       }
     });
   }
@@ -64,33 +43,71 @@ app.get('/flights/:id/passengers', async (req, res) => {
   try {
     const db = await connectDB();
 
-    // 1️⃣ Buscar vuelo
-    const [flights] = await db.query('SELECT * FROM flights WHERE id = ?', [flightId]);
-    if (flights.length === 0) return res.status(404).json({ code: 404, data: {} });
-
-    const flight = flights[0];
-
-    // 2️⃣ Traer pasajeros + boarding passes
-    const [passengers] = await db.query(
-      `SELECT p.id AS passenger_id, p.name, p.age, p.country,
-              bp.id AS boarding_pass_id, bp.purchase_id, bp.seat_type_id, bp.seat_id
-       FROM passengers p
-       JOIN boarding_passes bp ON bp.passenger_id = p.id
-       WHERE bp.flight_id = ?`,
+    // 1️⃣ Query unificada: vuelo + boarding_pass + passenger + seat_type
+    const [rows] = await db.query(
+      `SELECT 
+        f.flight_id, f.takeoff_date_time, f.takeoff_airport,
+        f.landing_date_time, f.landing_airport, f.airplane_id,
+        bp.boarding_pass_id, bp.purchase_id, bp.passenger_id,
+        bp.seat_type_id, bp.seat_id,
+        p.dni, p.name, p.age, p.country,
+        st.name AS seat_type_name
+       FROM flight f
+       JOIN boarding_pass bp ON bp.flight_id = f.flight_id
+       JOIN passenger p ON p.passenger_id = bp.passenger_id
+       JOIN seat_type st ON st.seat_type_id = bp.seat_type_id
+       WHERE f.flight_id = ?`,
       [flightId]
     );
 
-    // 3️⃣ Traer asientos del avión
+    if (rows.length === 0) {
+      return res.status(404).json({ code: 404, data: {} });
+    }
+
+    // 2️⃣ Armar objeto "vuelo"
+    const flight = {
+      flightId: rows[0].flight_id,
+      takeoffDateTime: rows[0].takeoff_date_time,
+      takeoffAirport: rows[0].takeoff_airport,
+      landingDateTime: rows[0].landing_date_time,
+      landingAirport: rows[0].landing_airport,
+      airplaneId: rows[0].airplane_id
+    };
+
+    // 3️⃣ Pasajeros con boarding_pass
+    const passengers = rows.map(r => ({
+      passengerId: r.passenger_id,
+      dni: r.dni,
+      name: r.name,
+      age: r.age,
+      country: r.country,
+      boardingPassId: r.boarding_pass_id,
+      purchaseId: r.purchase_id,
+      seatTypeId: r.seat_type_id,
+      seatTypeName: r.seat_type_name,
+      seatId: r.seat_id // puede ser null → se asigna después
+    }));
+
+    // 4️⃣ Traer asientos del avión
     const [seats] = await db.query(
-      `SELECT id, seat_type_id FROM seats WHERE airplane_id = ? ORDER BY id`,
-      [flight.airplane_id]
+      `SELECT seat_id, seat_row, seat_column, seat_type_id
+       FROM seat
+       WHERE airplane_id = ?
+       ORDER BY seat_row, seat_column`,
+      [flight.airplaneId]
     );
 
-    // 4️⃣ Crear grilla de asientos (ejemplo 6x6, ajustar según avión)
-    const seatGrid = createSeatGrid(6, 6, seats);
+    // Preparar lista de asientos disponibles
+    const seatList = seats.map(s => ({
+      seatId: s.seat_id,
+      seatRow: s.seat_row,
+      seatColumn: s.seat_column,
+      seatTypeId: s.seat_type_id,
+      occupied: false
+    }));
 
     // 5️⃣ Asignar asientos
-    const passengersWithSeats = assignSeats(passengers, seatGrid);
+    const passengersWithSeats = assignSeats(passengers, seatList);
 
     // 6️⃣ Transformar a camelCase
     const passengersCamel = passengersWithSeats.map(p => camelcaseKeys(p));
@@ -99,12 +116,7 @@ app.get('/flights/:id/passengers', async (req, res) => {
     res.json({
       code: 200,
       data: {
-        flightId: flight.id,
-        takeoffDateTime: flight.takeoff_date_time,
-        takeoffAirport: flight.takeoff_airport,
-        landingDateTime: flight.landing_date_time,
-        landingAirport: flight.landing_airport,
-        airplaneId: flight.airplane_id,
+        ...flight,
         passengers: passengersCamel
       }
     });
@@ -115,4 +127,4 @@ app.get('/flights/:id/passengers', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Servidor escuchando en http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Servidor escuchando en http://localhost:${PORT}`));
