@@ -8,30 +8,28 @@ async function getFlightWithPassengers(flightId) {
        f.landing_date_time, f.landing_airport, f.airplane_id,
        bp.boarding_pass_id, bp.purchase_id, bp.passenger_id,
        bp.seat_type_id, bp.seat_id,
-       p.dni, p.name, p.age, p.country,
-       st.name AS seat_type_name
+       p.dni, p.name, p.age, p.country
      FROM flight f
      JOIN boarding_pass bp ON bp.flight_id = f.flight_id
      JOIN passenger p ON p.passenger_id = bp.passenger_id
-     JOIN seat_type st ON st.seat_type_id = bp.seat_type_id
      WHERE f.flight_id = ?`,
     [flightId]
   );
 
   if (!rows.length) return null; // Si no hay resultados, retorna null
 
-  // Estructura la información del vuelo
+  // Estructura la información del vuelo y convierte fechas a timestamp
   const flight = {
     flightId: rows[0].flight_id,
-    takeoffDateTime: rows[0].takeoff_date_time,
+    takeoffDateTime: Math.floor(new Date(rows[0].takeoff_date_time).getTime() / 1000),
     takeoffAirport: rows[0].takeoff_airport,
-    landingDateTime: rows[0].landing_date_time,
+    landingDateTime: Math.floor(new Date(rows[0].landing_date_time).getTime() / 1000),
     landingAirport: rows[0].landing_airport,
     airplaneId: rows[0].airplane_id
   };
 
-  // Estructura la información de los pasajeros
-  const passengers = rows.map(({ passenger_id, dni, name, age, country, boarding_pass_id, purchase_id, seat_type_id, seat_type_name, seat_id }) => ({
+  // Estructura la información de los pasajeros (sin seatTypeName ni assignedSeat)
+  const passengers = rows.map(({ passenger_id, dni, name, age, country, boarding_pass_id, purchase_id, seat_type_id, seat_id }) => ({
     passengerId: passenger_id,
     dni,
     name,
@@ -40,7 +38,6 @@ async function getFlightWithPassengers(flightId) {
     boardingPassId: boarding_pass_id,
     purchaseId: purchase_id,
     seatTypeId: seat_type_id,
-    seatTypeName: seat_type_name,
     seatId: seat_id
   }));
 
