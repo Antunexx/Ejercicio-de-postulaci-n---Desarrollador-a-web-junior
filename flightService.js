@@ -21,9 +21,9 @@ async function getFlightWithPassengers(flightId) {
   // Estructura la información del vuelo y convierte fechas a timestamp
   const flight = {
     flightId: rows[0].flight_id,
-    takeoffDateTime: Math.floor(new Date(rows[0].takeoff_date_time).getTime() / 1000),
+    takeoffDateTime: new Date(rows[0].takeoff_date_time).getTime(),
     takeoffAirport: rows[0].takeoff_airport,
-    landingDateTime: Math.floor(new Date(rows[0].landing_date_time).getTime() / 1000),
+    landingDateTime: new Date(rows[0].landing_date_time).getTime(),
     landingAirport: rows[0].landing_airport,
     airplaneId: rows[0].airplane_id
   };
